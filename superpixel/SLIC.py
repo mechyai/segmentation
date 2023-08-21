@@ -19,3 +19,6 @@ def generate_SLIC_primitives(
     """
     # Get initial sampling of cluster centers by grid
 
+
+if __name__ ==  "__main__":
+    pass
