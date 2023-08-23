@@ -161,7 +161,7 @@ def generate_SLIC_primitives(
 
         # For cluster center
         for index, current_cluster_center_coordinate in enumerate(cluster_center_coordinates_bitmap):
-            logging.info(f"\t\tAt cluster center {index + 1} of {k_clusters}...")
+            logging.info(f"\t\tAt cluster center {index + 1} of {k_clusters} at <{current_cluster_center_coordinate}>...")
 
             # Get 2S x 2S window of pixels about cluster center
             cluster_window = get_window_about_center_pixel_coordinate(
@@ -195,24 +195,18 @@ def generate_SLIC_primitives(
                 if np.array_equal(image_coordinate, current_cluster_center_coordinate):
                     continue
 
-                # Transform coordinates/indices relative to entire image to the given window
-                window_row, window_column = window_coordinate
-                window_row, window_column = int(window_row), int(window_column)
-
                 # Compute distance metric for 5D space: sqrt(pixel_distance^2 + (m/S)^2 * color_distance^2)
-                pixel_distance = pixel_distances_from_center[window_row, window_column]
-                color_distance = color_distances_from_center[window_row, window_column]
+                pixel_distance = pixel_distances_from_center[window_coordinate[0], window_coordinate[1]]
+                color_distance = color_distances_from_center[window_coordinate[0], window_coordinate[1]]
 
                 distance_from_current_cluster_center = np.sqrt(pixel_distance ** 2 + (m / S) ** 2 * color_distance ** 2)
 
                 # Update label & distance matrix if new distance is less than current distance
-                current_distance = distances_matrix[window_row, window_column]
+                current_distance = distances_matrix[window_coordinate[0], window_coordinate[1]]
                 if distance_from_current_cluster_center < current_distance:
                     # Update label & distance matrix
-                    labels_matrix[window_row, window_column] = index + 1  # Start labeling at 1
-                    distances_matrix[window_row, window_column] = distance_from_current_cluster_center
-
-    print(f"labels_matrix.shape: {labels_matrix.shape}")
+                    labels_matrix[image_coordinate[0], image_coordinate[1]] = index + 1  # Start labeling at 1
+                    distances_matrix[image_coordinate[0], image_coordinate[1]] = distance_from_current_cluster_center
 
     return labels_matrix, distances_matrix, cluster_center_coordinates_bitmap
 
@@ -249,7 +243,7 @@ def get_factor_pairs(number: int, unique: bool = False) -> List[Tuple[int, int]]
 
     :param number: Number to find factor pairs for
     :param unique: If True, only return unique factor pairs, only (i, j) or (j, i) will be returned, not both
-    :return: Unique set of factor pairs
+    :return: Complete set, or unique, factor pairs
     """
     factor_pairs = []
     for i in range(1, int(np.sqrt(number)) + 1):
@@ -268,11 +262,14 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
     # Load image
-    image_path = "/home/cje/PathRobotics/recognition_data/aw3_sn0069_datasets/595_StereoTackToTackRecognition_feature_11/survey/snapshot_00001/observations/camera_1/image.png"
+    image_path = "/home/cje/Downloads/dog.png"
     image = Image.open(image_path)
+    # TODO even with square image there are still weird 0 patches that seem to be untouched by the window
+    image = image.resize((500, 500))  # TODO algorithm doesn't handle non near square images well
     image = np.array(image)
 
-    image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+
+    # image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
 
     logging.info("Running SLIC...")
 
