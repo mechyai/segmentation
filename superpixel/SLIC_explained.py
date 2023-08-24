@@ -4,7 +4,7 @@ import logging
 from typing import List, Tuple
 
 import numpy as np
-from scipy import spatial
+from scipy import spatial, interpolate
 from skimage import color
 
 
@@ -141,19 +141,27 @@ def generate_SLIC_primitives(
         # Populate the final cluster center coordinates sparse matrix with the cluster center label and the LAB colorspace values
         cluster_center_coordinates_sparse_matrix[new_row, new_column, :] = np.concatenate((cluster_label, LAB_color), axis=-1)
 
-    ###############################################
-    # Iteratively adjust clusters about the centers
-    ###############################################
+    ###########################################
+    # Create Voronoi diagram of cluster centers
+    ###########################################
+    # Create labels and distance matrix to track cluster assignments and distances
+    # Draw Voronoi diagram https://stackoverflow.com/a/71734591
+    grid_x, grid_y = np.mgrid[0:height, 0:width]
+    labels_matrix = interpolate.griddata(
+        points=cluster_center_coordinates_bitmap, values=np.arange(1, k_clusters + 1), xi=(grid_x, grid_y), method="nearest"
+    )
+
+    distances_matrix = np.full(shape=image_shape, fill_value=np.inf, dtype="float32")
+
+    #############################
+    # Iteratively adjust clusters
+    #############################
     # Create pixel coordinate matrix for easy windowing and indexing - same shape as image
     row_spacing = np.arange(stop=height, dtype="int16")
     column_spacing = np.arange(stop=width, dtype="int16")
 
     pixel_columns, pixel_rows = np.meshgrid(column_spacing, row_spacing, sparse=False)
     pixel_coordinates_matrix = np.concatenate((np.expand_dims(pixel_rows, axis=-1), np.expand_dims(pixel_columns, axis=-1)), axis=-1)
-
-    # Create labels and distance matrix to track cluster assignments and distances
-    labels_matrix = np.zeros(shape=image_shape, dtype="int16")
-    distances_matrix = np.full(shape=image_shape, fill_value=np.inf, dtype="float32")
 
     # For each iteration
     for iteration in range(iterations):
