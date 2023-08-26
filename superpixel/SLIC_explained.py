@@ -4,6 +4,7 @@ import logging
 from typing import List, Tuple
 
 import numpy as np
+import matplotlib.pyplot as plt
 from scipy import spatial, interpolate
 from skimage import color
 
@@ -98,12 +99,12 @@ def generate_SLIC_primitives(
     # Get total magnitude of the x & y directional gradients
     gradient_magnitude = np.linalg.norm(image_gradient_y, axis=-1) + np.linalg.norm(image_gradient_x, axis=-1)
 
-    for index, current_cluster_center_coordinate in enumerate(cluster_center_coordinates_bitmap):
+    for cluster_index, current_cluster_center_coordinate in enumerate(cluster_center_coordinates_bitmap):
         # Get current cluster data
         row, column = current_cluster_center_coordinate
 
         LAB_color = image_LAB[row, column]
-        cluster_label = np.array([index + 1])  # Start labeling at 1
+        cluster_label = np.array([cluster_index + 1])  # Start labeling at 1
 
         # Get neighborhood slice about center point
         neighborhood_window = get_window_about_center_pixel_coordinate(
@@ -134,7 +135,7 @@ def generate_SLIC_primitives(
         # Adjust current cluster data, if moved from original location
         if not np.array_equal(current_cluster_center_coordinate, adjusted_cluster_center_coordinate[0]):
             # Update cluster center location bitmap
-            cluster_center_coordinates_bitmap[index] = adjusted_cluster_center_coordinate
+            cluster_center_coordinates_bitmap[cluster_index] = adjusted_cluster_center_coordinate
             # Erase old cluster location data from sparse matrix
             cluster_center_coordinates_sparse_matrix[new_row, new_column, :] = np.zeros(shape=(4,))
 
@@ -151,25 +152,35 @@ def generate_SLIC_primitives(
         points=cluster_center_coordinates_bitmap, values=np.arange(1, k_clusters + 1), xi=(grid_x, grid_y), method="nearest"
     )
 
-    distances_matrix = np.full(shape=image_shape, fill_value=np.inf, dtype="float32")
-
     #############################
     # Iteratively adjust clusters
     #############################
     # Create pixel coordinate matrix for easy windowing and indexing - same shape as image
     row_spacing = np.arange(stop=height, dtype="int16")
     column_spacing = np.arange(stop=width, dtype="int16")
-
     pixel_columns, pixel_rows = np.meshgrid(column_spacing, row_spacing, sparse=False)
+
     pixel_coordinates_matrix = np.concatenate((np.expand_dims(pixel_rows, axis=-1), np.expand_dims(pixel_columns, axis=-1)), axis=-1)
+
+    distances_matrix = np.full(shape=image_shape, fill_value=np.inf, dtype="float32")
 
     # For each iteration
     for iteration in range(iterations):
         logging.info(f"\tRunning SLIC iteration {iteration + 1} of {iterations}...")
 
         # For cluster center
-        for index, current_cluster_center_coordinate in enumerate(cluster_center_coordinates_bitmap):
-            logging.info(f"\t\tAt cluster center {index + 1} of {k_clusters} at <{current_cluster_center_coordinate}>...")
+        for cluster_index, current_cluster_center_coordinate in enumerate(cluster_center_coordinates_bitmap):
+            # Get updated cluster center as cluster average
+            current_cluster_pixels = np.argwhere(labels_matrix == cluster_index + 1)
+            current_cluster_center_coordinate = np.mean(current_cluster_pixels, axis=0).astype("int16")
+
+            logging.info(
+                f"\t\tAt cluster center {cluster_index + 1} of {k_clusters} - "
+                f"Updated from <{cluster_center_coordinates_bitmap[cluster_index]}> to <{current_cluster_center_coordinate}>..."
+            )
+
+            # Update cluster center location bitmap with new mean
+            cluster_center_coordinates_bitmap[cluster_index] = current_cluster_center_coordinate
 
             # Get 2S x 2S window of pixels about cluster center
             cluster_window = get_window_about_center_pixel_coordinate(
@@ -199,10 +210,6 @@ def generate_SLIC_primitives(
 
             # For each pixel in window - adjust label & distance matrix if new distance is less than current distance
             for window_coordinate, image_coordinate in zip(window_coordinates_slice.reshape(-1, 2), image_coordinates_slice.reshape(-1, 2)):
-                # Skip cluster center pixel
-                if np.array_equal(image_coordinate, current_cluster_center_coordinate):
-                    continue
-
                 # Compute distance metric for 5D space: sqrt(pixel_distance^2 + (m/S)^2 * color_distance^2)
                 pixel_distance = pixel_distances_from_center[window_coordinate[0], window_coordinate[1]]
                 color_distance = color_distances_from_center[window_coordinate[0], window_coordinate[1]]
@@ -210,10 +217,11 @@ def generate_SLIC_primitives(
                 distance_from_current_cluster_center = np.sqrt(pixel_distance ** 2 + (m / S) ** 2 * color_distance ** 2)
 
                 # Update label & distance matrix if new distance is less than current distance
-                current_distance = distances_matrix[window_coordinate[0], window_coordinate[1]]
+                current_distance = distances_matrix[image_coordinate[0], image_coordinate[1]]
+
                 if distance_from_current_cluster_center < current_distance:
                     # Update label & distance matrix
-                    labels_matrix[image_coordinate[0], image_coordinate[1]] = index + 1  # Start labeling at 1
+                    labels_matrix[image_coordinate[0], image_coordinate[1]] = cluster_index + 1  # Start labeling at 1
                     distances_matrix[image_coordinate[0], image_coordinate[1]] = distance_from_current_cluster_center
 
     return labels_matrix, distances_matrix, cluster_center_coordinates_bitmap
@@ -276,15 +284,26 @@ if __name__ == "__main__":
     image = image.resize((500, 500))  # TODO algorithm doesn't handle non near square images well
     image = np.array(image)
 
-
     # image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
 
     logging.info("Running SLIC...")
 
-    labels_matrix, distances_matrix, _ = generate_SLIC_primitives(
+    labels_matrix, distances_matrix, cluster_center_coordinates_bitmap = generate_SLIC_primitives(
         image=image,
-        k_clusters=100,
-        iterations=2,
-        m=10,
+        k_clusters=500,
+        iterations=5,
+        m=5000,
         initialization_neighborhood=3,
     )
+
+    plt.imshow(labels_matrix)
+    plt.imshow(distances_matrix)
+
+    segmented_image = np.empty(shape=image.shape, dtype="uint8")
+    for cluster_label, cluster_center_coordinate in enumerate(cluster_center_coordinates_bitmap):
+        cluster_color = image[cluster_center_coordinate[0], cluster_center_coordinate[1]]
+        cluster_pixels = np.argwhere(labels_matrix == cluster_label + 1)
+
+        segmented_image[cluster_pixels[:, 0], cluster_pixels[:, 1]] = cluster_color
+
+    plt.imshow(segmented_image)
