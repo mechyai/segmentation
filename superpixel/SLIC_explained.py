@@ -273,16 +273,17 @@ def get_factor_pairs(number: int, unique: bool = False) -> List[Tuple[int, int]]
 
 if __name__ == "__main__":
     import cv2
+    import os.path
     from PIL import Image
 
     logging.basicConfig(level=logging.INFO)
 
     # Load image
-    image_path = "/home/cje/Downloads/dog.png"
+    image_path = os.path.abspath("../sample_data/dog.png")
     image = Image.open(image_path)
     # TODO even with square image there are still weird 0 patches that seem to be untouched by the window
     image = image.resize((500, 500))  # TODO algorithm doesn't handle non near square images well
-    image = np.array(image)
+    image = np.array(image)[:, :, :3]
 
     # image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
 
@@ -292,7 +293,7 @@ if __name__ == "__main__":
         image=image,
         k_clusters=500,
         iterations=5,
-        m=5000,
+        m=0.1,
         initialization_neighborhood=3,
     )
 
