@@ -59,6 +59,7 @@ def generate_SLIC_primitives(
 
     # ~ Cluster dimensions
     cluster_length = np.sqrt(S)
+    window_size = 2 * int(cluster_length)
 
     # Convert RGB image to LAB colorspace
     image_LAB = color.rgb2lab(image)
@@ -87,10 +88,6 @@ def generate_SLIC_primitives(
         axis=-1,
     ).reshape(-1, 2)
 
-    # Create sparse matrix with shape of input image with depth for (label + LAB colorspace) to track cluster centers spatially & in color
-    # We will populate this with the cluster center labels and the LAB colorspace values in the loop below
-    cluster_center_coordinates_sparse_matrix = np.zeros(shape=image_shape + (4,))  # H x W x 4 (label + LAB colorspace) matrix
-
     ##################################################
     # Adjust cluster centers to local minimum gradient
     ##################################################
@@ -102,9 +99,6 @@ def generate_SLIC_primitives(
     for cluster_index, current_cluster_center_coordinate in enumerate(cluster_center_coordinates_bitmap):
         # Get current cluster data
         row, column = current_cluster_center_coordinate
-
-        LAB_color = image_LAB[row, column]
-        cluster_label = np.array([cluster_index + 1])  # Start labeling at 1
 
         # Get neighborhood slice about center point
         neighborhood_window = get_window_about_center_pixel_coordinate(
@@ -134,13 +128,8 @@ def generate_SLIC_primitives(
 
         # Adjust current cluster data, if moved from original location
         if not np.array_equal(current_cluster_center_coordinate, adjusted_cluster_center_coordinate[0]):
-            # Update cluster center location bitmap
+            # Update cluster center location bitmap and color
             cluster_center_coordinates_bitmap[cluster_index] = adjusted_cluster_center_coordinate
-            # Erase old cluster location data from sparse matrix
-            cluster_center_coordinates_sparse_matrix[new_row, new_column, :] = np.zeros(shape=(4,))
-
-        # Populate the final cluster center coordinates sparse matrix with the cluster center label and the LAB colorspace values
-        cluster_center_coordinates_sparse_matrix[new_row, new_column, :] = np.concatenate((cluster_label, LAB_color), axis=-1)
 
     ###########################################
     # Create Voronoi diagram of cluster centers
@@ -148,7 +137,7 @@ def generate_SLIC_primitives(
     # Create labels and distance matrix to track cluster assignments and distances
     # Draw Voronoi diagram https://stackoverflow.com/a/71734591
     grid_x, grid_y = np.mgrid[0:height, 0:width]
-    labels_matrix = interpolate.griddata(
+    labels_tracker_matrix = interpolate.griddata(
         points=cluster_center_coordinates_bitmap, values=np.arange(1, k_clusters + 1), xi=(grid_x, grid_y), method="nearest"
     )
 
@@ -162,7 +151,7 @@ def generate_SLIC_primitives(
 
     pixel_coordinates_matrix = np.concatenate((np.expand_dims(pixel_rows, axis=-1), np.expand_dims(pixel_columns, axis=-1)), axis=-1)
 
-    distances_matrix = np.full(shape=image_shape, fill_value=np.inf, dtype="float32")
+    distances_tracker_matrix = np.full(shape=image_shape, fill_value=np.inf, dtype="float32")
 
     # For each iteration
     for iteration in range(iterations):
@@ -171,8 +160,9 @@ def generate_SLIC_primitives(
         # For cluster center
         for cluster_index, current_cluster_center_coordinate in enumerate(cluster_center_coordinates_bitmap):
             # Get updated cluster center as cluster average
-            current_cluster_pixels = np.argwhere(labels_matrix == cluster_index + 1)
+            current_cluster_pixels = np.argwhere(labels_tracker_matrix == cluster_index + 1)
             current_cluster_center_coordinate = np.mean(current_cluster_pixels, axis=0).astype("int16")
+            current_cluster_center_color = image_LAB[current_cluster_center_coordinate[0], current_cluster_center_coordinate[1]]
 
             logging.info(
                 f"\t\tAt cluster center {cluster_index + 1} of {k_clusters} - "
@@ -184,7 +174,7 @@ def generate_SLIC_primitives(
 
             # Get 2S x 2S window of pixels about cluster center
             cluster_window = get_window_about_center_pixel_coordinate(
-                image_shape=image_shape, center_pixel_coordinate=current_cluster_center_coordinate, window_size=2 * int(cluster_length),
+                image_shape=image_shape, center_pixel_coordinate=current_cluster_center_coordinate, window_size=window_size,
             )
 
             # Get the slice coordinates relative to the entire image
@@ -198,33 +188,31 @@ def generate_SLIC_primitives(
             ).reshape(image_coordinates_slice.shape[:2])
 
             # Get matrix of color distances - for each pixel in window to cluster center
-            cluster_center_color_vector = (
-                cluster_center_coordinates_sparse_matrix[current_cluster_center_coordinate[0], current_cluster_center_coordinate[1], 1:]
-            )
-
             LAB_colors_in_window = image_LAB[cluster_window]
 
             color_distances_from_center = spatial.distance.cdist(
-                LAB_colors_in_window.reshape(-1, 3), cluster_center_color_vector.reshape(1, -1)
+                LAB_colors_in_window.reshape(-1, 3), current_cluster_center_color.reshape(1, -1)
             ).reshape(image_coordinates_slice.shape[:2])
 
             # For each pixel in window - adjust label & distance matrix if new distance is less than current distance
             for window_coordinate, image_coordinate in zip(window_coordinates_slice.reshape(-1, 2), image_coordinates_slice.reshape(-1, 2)):
                 # Compute distance metric for 5D space: sqrt(pixel_distance^2 + (m/S)^2 * color_distance^2)
                 pixel_distance = pixel_distances_from_center[window_coordinate[0], window_coordinate[1]]
-                color_distance = color_distances_from_center[window_coordinate[0], window_coordinate[1]]
 
-                distance_from_current_cluster_center = np.sqrt(pixel_distance ** 2 + (m / S) ** 2 * color_distance ** 2)
+                color_distance = color_distances_from_center[window_coordinate[0], window_coordinate[1]]
+                weighted_color_distance = (m / S) ** 2 * color_distance
+
+                distance_from_current_cluster_center = np.sqrt(pixel_distance ** 2 + weighted_color_distance ** 2)
 
                 # Update label & distance matrix if new distance is less than current distance
-                current_distance = distances_matrix[image_coordinate[0], image_coordinate[1]]
+                current_distance = distances_tracker_matrix[image_coordinate[0], image_coordinate[1]]
 
                 if distance_from_current_cluster_center < current_distance:
                     # Update label & distance matrix
-                    labels_matrix[image_coordinate[0], image_coordinate[1]] = cluster_index + 1  # Start labeling at 1
-                    distances_matrix[image_coordinate[0], image_coordinate[1]] = distance_from_current_cluster_center
+                    labels_tracker_matrix[image_coordinate[0], image_coordinate[1]] = cluster_index + 1  # Start labeling at 1
+                    distances_tracker_matrix[image_coordinate[0], image_coordinate[1]] = distance_from_current_cluster_center
 
-    return labels_matrix, distances_matrix, cluster_center_coordinates_bitmap
+    return labels_tracker_matrix, distances_tracker_matrix, cluster_center_coordinates_bitmap
 
 
 def get_window_about_center_pixel_coordinate(
@@ -279,7 +267,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
     # Load image
-    image_path = os.path.abspath("../sample_data/dog.png")
+    image_path = os.path.abspath("../sample_data/beagle-hound-dog.webp")
     image = Image.open(image_path)
     # TODO even with square image there are still weird 0 patches that seem to be untouched by the window
     image = image.resize((500, 500))  # TODO algorithm doesn't handle non near square images well
@@ -292,8 +280,8 @@ if __name__ == "__main__":
     labels_matrix, distances_matrix, cluster_center_coordinates_bitmap = generate_SLIC_primitives(
         image=image,
         k_clusters=500,
-        iterations=5,
-        m=0.1,
+        iterations=50,
+        m=5000,
         initialization_neighborhood=3,
     )
 
